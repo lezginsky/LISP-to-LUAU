@@ -1,0 +1,9 @@
+- ServerScriptService
+    - LispMachine
+        - Script
+        - Environment
+        - Evaluator
+        - Runtime
+        - Reader
+- StarterGui
+    - LocalScript
