@@ -4,6 +4,7 @@
         - Evaluator
         - Runtime
         - Reader
+        - CEKMachine
 - ServerScriptService
     - ServerBridge
 - StarterGui
