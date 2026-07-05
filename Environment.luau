@@ -28,9 +28,20 @@ function Environment.create(): { [string]: any }
 	local env: { [string]: any } = {}
 	env.__macros__ = {}
 
-	env["+"] = function(a: number, b: number): number return a + b end
+	env["+"] = function(...: number): number
+		local args = {...}
+		local result = 0
+		for _, v in ipairs(args) do
+			result = result + (type(v) == "number" and v or 0)
+		end
+		return result
+	end
 	env["-"] = function(a: number, b: number): number return a - b end
-	env["*"] = function(a: number, b: number): number return a * b end
+	env["*"] = function(...: number): number
+		local result = 1
+		for _, v in ipairs({...}) do result = result * v end
+		return result
+	end
 	env["/"] = function(a: number, b: number): number return a / b end
 	env["%"] = function(a: number, b: number): number return a % b end
 	env["^"] = function(a: number, b: number): number return a ^ b end
@@ -70,9 +81,7 @@ function Environment.create(): { [string]: any }
 		local args = {...}
 		if #args > 0 and type(args[#args]) == "table" then
 			local last = table.remove(args)
-			for _, v in last do
-				table.insert(args, v)
-			end
+			for _, v in last do table.insert(args, v) end
 		end
 		return fn(table.unpack(args))
 	end
@@ -113,9 +122,7 @@ function Environment.create(): { [string]: any }
 
 	env["string-split"] = function(s: string, sep: string): { string }
 		local result = {}
-		for part in s:gmatch("[^" .. sep .. "]+") do
-			table.insert(result, part)
-		end
+		for part in s:gmatch("[^" .. sep .. "]+") do table.insert(result, part) end
 		return result
 	end
 
@@ -125,9 +132,7 @@ function Environment.create(): { [string]: any }
 
 	env["sort"] = function(lst: { any }, cmp: any?): { any }
 		local copy = {}
-		for _, v in lst do
-			table.insert(copy, v)
-		end
+		for _, v in lst do table.insert(copy, v) end
 		if cmp then
 			table.sort(copy, function(a: any, b: any): boolean return cmp(a, b) end)
 		else
@@ -139,26 +144,20 @@ function Environment.create(): { [string]: any }
 	env["filter"] = function(fn: any, lst: { any }): { any }
 		local result = {}
 		for _, v in lst do
-			if fn(v) then
-				table.insert(result, v)
-			end
+			if fn(v) then table.insert(result, v) end
 		end
 		return result
 	end
 
 	env["reduce"] = function(fn: any, init: any, lst: { any }): any
 		local acc = init
-		for _, v in lst do
-			acc = fn(acc, v)
-		end
+		for _, v in lst do acc = fn(acc, v) end
 		return acc
 	end
 
 	env["map"] = function(fn: any, lst: { any }): { any }
 		local result = {}
-		for _, v in lst do
-			table.insert(result, fn(v))
-		end
+		for _, v in lst do table.insert(result, fn(v)) end
 		return result
 	end
 
@@ -166,13 +165,9 @@ function Environment.create(): { [string]: any }
 		step = step or 1
 		local result = {}
 		if step > 0 then
-			for i = start, stop, step do
-				table.insert(result, i)
-			end
+			for i = start, stop, step do table.insert(result, i) end
 		else
-			for i = start, stop, step do
-				table.insert(result, i)
-			end
+			for i = start, stop, step do table.insert(result, i) end
 		end
 		return result
 	end
@@ -182,15 +177,11 @@ function Environment.create(): { [string]: any }
 		local result = {}
 		local minLen = math.huge
 		for _, lst in lists do
-			if #lst < minLen then
-				minLen = #lst
-			end
+			if #lst < minLen then minLen = #lst end
 		end
 		for i = 1, minLen do
 			local tuple = {}
-			for _, lst in lists do
-				table.insert(tuple, lst[i])
-			end
+			for _, lst in lists do table.insert(tuple, lst[i]) end
 			table.insert(result, tuple)
 		end
 		return result
@@ -200,12 +191,8 @@ function Environment.create(): { [string]: any }
 		local fixed = {...}
 		return function(...: any): any
 			local args = {}
-			for _, v in fixed do
-				table.insert(args, v)
-			end
-			for _, v in {...} do
-				table.insert(args, v)
-			end
+			for _, v in fixed do table.insert(args, v) end
+			for _, v in {...} do table.insert(args, v) end
 			return fn(table.unpack(args))
 		end
 	end
@@ -214,9 +201,7 @@ function Environment.create(): { [string]: any }
 		local fns = {...}
 		return function(x: any): any
 			local result = x
-			for i = #fns, 1, -1 do
-				result = fns[i](result)
-			end
+			for i = #fns, 1, -1 do result = fns[i](result) end
 			return result
 		end
 	end
@@ -232,9 +217,7 @@ function Environment.create(): { [string]: any }
 	end
 
 	env["assert"] = function(condition: any, msg: string?): any
-		if not condition then
-			error(msg or "assertion failed")
-		end
+		if not condition then error(msg or "assertion failed") end
 		return condition
 	end
 
@@ -242,9 +225,7 @@ function Environment.create(): { [string]: any }
 		local cache: { [string]: any } = {}
 		return function(...: any): any
 			local key = table.concat({...}, "\0")
-			if cache[key] == nil then
-				cache[key] = fn(...)
-			end
+			if cache[key] == nil then cache[key] = fn(...) end
 			return cache[key]
 		end
 	end
@@ -273,11 +254,8 @@ function Environment.create(): { [string]: any }
 			local success, ds = pcall(function()
 				return game:GetService("DataStoreService"):GetDataStore(name)
 			end)
-			if success then
-				useMock = false
-			end
+			if success then useMock = false end
 		end
-
 		if useMock then
 			local mockData: { [string]: any } = {}
 			return {
@@ -303,80 +281,51 @@ function Environment.create(): { [string]: any }
 	end
 
 	env["data-set!"] = function(ds: any, key: string, value: any): any
-		local success, err = pcall(function()
-			ds:SetAsync(key, value)
-		end)
-		if not success then
-			error("DataStore set failed: " .. tostring(err))
-		end
+		local success, err = pcall(function() ds:SetAsync(key, value) end)
+		if not success then error("DataStore set failed: " .. tostring(err)) end
 		return value
 	end
 
 	env["data-get"] = function(ds: any, key: string): any
-		local success, result = pcall(function()
-			return ds:GetAsync(key)
-		end)
-		if not success then
-			error("DataStore get failed: " .. tostring(result))
-		end
+		local success, result = pcall(function() return ds:GetAsync(key) end)
+		if not success then error("DataStore get failed: " .. tostring(result)) end
 		return result
 	end
 
 	env["data-update!"] = function(ds: any, key: string, fn: any): boolean
 		local success, err = pcall(function()
-			ds:UpdateAsync(key, function(old: any): any
-				return fn(old)
-			end)
+			ds:UpdateAsync(key, function(old: any): any return fn(old) end)
 		end)
-		if not success then
-			error("DataStore update failed: " .. tostring(err))
-		end
+		if not success then error("DataStore update failed: " .. tostring(err)) end
 		return true
 	end
 
 	env["data-remove!"] = function(ds: any, key: string): boolean
-		local success, err = pcall(function()
-			ds:RemoveAsync(key)
-		end)
-		if not success then
-			error("DataStore remove failed: " .. tostring(err))
-		end
+		local success, err = pcall(function() ds:RemoveAsync(key) end)
+		if not success then error("DataStore remove failed: " .. tostring(err)) end
 		return true
 	end
 
 	env["http-get"] = function(url: string): string
 		local hs = game:GetService("HttpService")
-		local success, result = pcall(function()
-			return hs:GetAsync(url)
-		end)
-		if not success then
-			error("HTTP GET failed: " .. tostring(result))
-		end
+		local success, result = pcall(function() return hs:GetAsync(url) end)
+		if not success then error("HTTP GET failed: " .. tostring(result)) end
 		return result
 	end
 
 	env["http-post"] = function(url: string, body: string): string
 		local hs = game:GetService("HttpService")
-		local success, result = pcall(function()
-			return hs:PostAsync(url, body)
-		end)
-		if not success then
-			error("HTTP POST failed: " .. tostring(result))
-		end
+		local success, result = pcall(function() return hs:PostAsync(url, body) end)
+		if not success then error("HTTP POST failed: " .. tostring(result)) end
 		return result
 	end
 
 	env["http-get-async"] = function(url: string, callback: any): boolean
 		local hs = game:GetService("HttpService")
 		task.spawn(function()
-			local success, result = pcall(function()
-				return hs:GetAsync(url)
-			end)
-			if success then
-				callback(result)
-			else
-				warn("HTTP GET failed: " .. tostring(result))
-			end
+			local success, result = pcall(function() return hs:GetAsync(url) end)
+			if success then callback(result)
+			else warn("HTTP GET failed: " .. tostring(result)) end
 		end)
 		return true
 	end
@@ -478,15 +427,9 @@ function Environment.create(): { [string]: any }
 
 	setmetatable(env, {
 		__index = function(t: { [string]: any }, k: string): any
-			if rawget(t, k) ~= nil then
-				return rawget(t, k)
-			end
-			if _G[k] ~= nil then
-				return _G[k]
-			end
-			if _G.game and (_G.game :: any)[k] ~= nil then
-				return (_G.game :: any)[k]
-			end
+			if rawget(t, k) ~= nil then return rawget(t, k) end
+			if _G[k] ~= nil then return _G[k] end
+			if _G.game and (_G.game :: any)[k] ~= nil then return (_G.game :: any)[k] end
 			return nil
 		end
 	})
