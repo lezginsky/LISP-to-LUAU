@@ -2,6 +2,14 @@
 
 local CEKMachine = {}
 
+local function tableClone(tbl: {any}): {any}
+	local result = {}
+	for k, v in pairs(tbl) do
+		result[k] = v
+	end
+	return result
+end
+
 local function parseLambdaArgs(argsAst: any): any
 	local required: { string } = {}
 	local optional: { any } = {}
@@ -178,12 +186,23 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 							if formName == "call/cc" then
 								local stackSnapshot = {}
 								for _, frame in ipairs(kStack) do
-									table.insert(stackSnapshot, frame)
+									local frameCopy = {
+										type = frame.type,
+										env = frame.env,
+										pending = frame.pending and tableClone(frame.pending) or nil,
+										ready = frame.ready and tableClone(frame.ready) or nil,
+										varName = frame.varName,
+										thenBranch = frame.thenBranch,
+										elseBranch = frame.elseBranch,
+										bindings = frame.bindings,
+										index = frame.index,
+										body = frame.body,
+									}
+									table.insert(stackSnapshot, frameCopy)
 								end
 								local continuationObject = {
 									type = "continuation",
 									stack = stackSnapshot,
-									env = env
 								}
 								table.insert(kStack, {
 									type = "callcc",
@@ -310,6 +329,7 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 				end
 
 			elseif frame.type == "begin-seq" then
+				-- nothing
 
 			elseif frame.type == "set-var" then
 				local varName = frame.varName
@@ -357,9 +377,7 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 					if f.argsInfo.required[1] then
 						localEnv[f.argsInfo.required[1]] = frame.cont
 					end
-
 					if #f.body > 0 then
-
 						if #f.body > 1 then
 							table.insert(kStack, {
 								type = "func-body",
@@ -382,10 +400,8 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 			elseif frame.type == "func-body" then
 				if #frame.body > 0 then
 					local nextExpr = table.remove(frame.body, 1)
-					table.insert(kStack, frame) 
+					table.insert(kStack, frame)
 					control = nextExpr
-				else
-
 				end
 
 			elseif frame.type == "eval-arg" then
@@ -399,18 +415,29 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 					local args = frame.ready
 
 					if type(func) == "table" and func.type == "continuation" then
-						local savedStack = func.stack
 						kStack = {}
-						for _, savedFrame in ipairs(savedStack) do
-							table.insert(kStack, savedFrame)
+						for _, savedFrame in ipairs(func.stack) do
+							local restoredFrame = {
+								type = savedFrame.type,
+								env = savedFrame.env,
+								pending = savedFrame.pending and tableClone(savedFrame.pending) or nil,
+								ready = savedFrame.ready and tableClone(savedFrame.ready) or nil,
+								varName = savedFrame.varName,
+								thenBranch = savedFrame.thenBranch,
+								elseBranch = savedFrame.elseBranch,
+								bindings = savedFrame.bindings,
+								index = savedFrame.index,
+								body = savedFrame.body,
+							}
+							table.insert(kStack, restoredFrame)
 						end
 						if #kStack > 0 then
 							local topFrame = kStack[#kStack]
 							if topFrame.type == "eval-arg" then
 								topFrame.pending = {}
-								table.insert(topFrame.ready, args[1] or nil)
 							end
 						end
+						val = args[1] or nil
 						control = nil
 					elseif type(func) == "table" and func.type == "function" then
 						local localEnv: { [string]: any } = {}
