@@ -1,6 +1,8 @@
+--!strict
+
 local Reader = {}
 
-local function tokenize(str)
+local function tokenize(str: string): { any }
 	local tokens = {}
 	local i = 1
 
@@ -94,7 +96,7 @@ local function tokenize(str)
 	return tokens
 end
 
-local function readTokens(tokens, pos)
+local function readTokens(tokens: { any }, pos: number): (any, number)
 	if pos > #tokens then
 		return nil, pos
 	end
@@ -143,7 +145,7 @@ local function readTokens(tokens, pos)
 	return nil, pos
 end
 
-function Reader.parse(str)
+function Reader.parse(str: string): { any }
 	local tokens = tokenize(str)
 	local ast = {}
 	local pos = 1
