@@ -1,9 +1,10 @@
-- ServerScriptService
+- ReplicatedStorage
     - LispMachine
-        - Script
         - Environment
         - Evaluator
         - Runtime
         - Reader
+- ServerScriptService
+    - ServerBridge
 - StarterGui
     - LocalScript
