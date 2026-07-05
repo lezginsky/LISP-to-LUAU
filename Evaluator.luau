@@ -158,24 +158,204 @@ local function bindLambdaArgs(argsInfo, args, localEnv)
 end
 
 local function applyFunction(func, args)
+	print("[applyFunction] Applying function...")
 	if type(func) == "table" and func.type == "function" then
+		print("[applyFunction] Lisp function, args: " .. #args)
 		local localEnv = {}
 		setmetatable(localEnv, {__index = func.closure})
 		bindLambdaArgs(func.argsInfo, args, localEnv)
 		local result = nil
 		for i, expr in ipairs(func.body) do
+			print("[applyFunction] Evaluating body expr #" .. i)
 			local isTail = (i == #func.body)
 			result = Evaluator.eval(expr, localEnv, isTail)
 			if isTail and type(result) == "table" and result.tailcall then
+				print("[applyFunction] Body returned tailcall")
 				return result
 			end
 		end
+		print("[applyFunction] Returning: " .. toLispString(result, 0, {}))
 		return result
 	elseif type(func) == "function" then
+		print("[applyFunction] Native function")
 		return func(table.unpack(args))
 	else
 		error("Not a function: " .. tostring(func))
 	end
+end
+
+local function expandSyntaxRules(macro, elements, env, isTail)
+	local macroName = elements[1].name
+	local macroArgs = {}
+	for i = 2, #elements do
+		table.insert(macroArgs, elements[i])
+	end
+
+	local builtins = {
+		"define", "lambda", "if", "begin", "quote", "set!", "let", "let*", "letrec",
+		"named-let", "cond", "case", "try", "and", "or", "for", "while", "when", "unless",
+		"struct", "tween", "once", "on-touched", "syntax-rules", "defmacro",
+		"quasiquote", "eval", "apply", "cons", "car", "cdr", "list", "instance", "service", "connect"
+	}
+
+	for _, rule in ipairs(macro.rules) do
+		local pattern = rule.pattern
+		local template = rule.template
+		if pattern.type == "list" and #pattern.elements > 0 then
+			local patFirst = pattern.elements[1]
+			if patFirst.type == "symbol" and patFirst.name == macroName then
+				local bindings = {}
+				local argIdx = 1
+				local matchSuccess = true
+
+				local function matchPattern(pat, args)
+					if pat.type == "symbol" then
+						local name = pat.name
+						if name == "..." then
+							local rest = {}
+							while argIdx <= #args do
+								table.insert(rest, args[argIdx])
+								argIdx = argIdx + 1
+							end
+							bindings["..."] = rest
+							return true
+						end
+						local isLiteral = false
+						for _, lit in ipairs(macro.literals) do
+							if lit == name then
+								isLiteral = true
+								break
+							end
+						end
+						if isLiteral then
+							if argIdx <= #args then
+								local arg = args[argIdx]
+								argIdx = argIdx + 1
+								return (arg.type == "symbol" and arg.name == name)
+							else
+								return false
+							end
+						end
+						if argIdx <= #args then
+							bindings[name] = args[argIdx]
+							argIdx = argIdx + 1
+							return true
+						end
+						return false
+					elseif pat.type == "list" then
+						if argIdx > #args then return false end
+						local arg = args[argIdx]
+						argIdx = argIdx + 1
+						if arg.type ~= "list" then return false end
+						local subArgs = arg.elements
+						local savedBindings = {}
+						for k, v in pairs(bindings) do savedBindings[k] = v end
+						local subIdx = 1
+						local savedArgIdx = argIdx
+						argIdx = 1
+						for _, subPat in ipairs(pat.elements) do
+							if subPat.type == "symbol" and subPat.name == "..." then
+								local rest = {}
+								while subIdx <= #subArgs do
+									table.insert(rest, subArgs[subIdx])
+									subIdx = subIdx + 1
+								end
+								if #pat.elements >= 2 then
+									local varName = pat.elements[2].name
+									bindings[varName] = rest
+								end
+								return true
+							end
+							if subIdx > #subArgs then
+								for k in pairs(bindings) do bindings[k] = nil end
+								for k, v in pairs(savedBindings) do bindings[k] = v end
+								return false
+							end
+							if not matchPattern(subPat, {subArgs[subIdx]}) then
+								for k in pairs(bindings) do bindings[k] = nil end
+								for k, v in pairs(savedBindings) do bindings[k] = v end
+								return false
+							end
+							subIdx = subIdx + 1
+						end
+						argIdx = savedArgIdx
+						return true
+					else
+						if argIdx <= #args then
+							local arg = args[argIdx]
+							argIdx = argIdx + 1
+							return arg.type == pat.type and arg.value == pat.value
+						end
+						return false
+					end
+				end
+
+				for i = 2, #pattern.elements do
+					if not matchPattern(pattern.elements[i], macroArgs) then
+						matchSuccess = false
+						break
+					end
+				end
+
+				if matchSuccess then
+					local gensymCounter = 0
+					local gensymMap = {}
+
+					local function isBuiltin(name)
+						for _, b in ipairs(builtins) do
+							if b == name then return true end
+						end
+						return false
+					end
+
+					local function gensym(prefix)
+						gensymCounter = gensymCounter + 1
+						return prefix .. "_" .. tostring(gensymCounter)
+					end
+
+					local function rename(node)
+						if node.type == "symbol" then
+							local name = node.name
+							if bindings[name] then
+								return bindings[name]
+							end
+							for _, lit in ipairs(macro.literals) do
+								if lit == name then return {type = "symbol", name = name} end
+							end
+							if isBuiltin(name) then
+								return {type = "symbol", name = name}
+							end
+							if not gensymMap[name] then
+								gensymMap[name] = gensym(name)
+							end
+							return {type = "symbol", name = gensymMap[name]}
+						elseif node.type == "list" then
+							local newElements = {}
+							for _, elem in ipairs(node.elements) do
+								if elem.type == "symbol" and elem.name == "..." then
+									local restBind = bindings["..."]
+									if restBind then
+										for _, restElem in ipairs(restBind) do
+											table.insert(newElements, restElem)
+										end
+									end
+								else
+									table.insert(newElements, rename(elem))
+								end
+							end
+							return {type = "list", elements = newElements}
+						else
+							return node
+						end
+					end
+
+					local expanded = rename(template)
+					return Evaluator.eval(expanded, env, isTail)
+				end
+			end
+		end
+	end
+	error("syntax-rules: no matching pattern")
 end
 
 function Evaluator.eval(ast, env, isTail)
@@ -191,6 +371,9 @@ function Evaluator.eval(ast, env, isTail)
 		return nil
 	elseif ast.type == "symbol" then
 		local name = ast.name
+		if name:sub(1, 1) == ":" then
+			return name
+		end
 		local current = env
 		while current do
 			if rawget(current, name) ~= nil then
@@ -229,6 +412,7 @@ function Evaluator.eval(ast, env, isTail)
 			if formName == "define" then
 				local varName = elements[2].name
 				local value = Evaluator.eval(elements[3], env, false)
+				print("[eval/define] value type: " .. type(value))
 				env[varName] = value
 				return value
 
@@ -657,6 +841,20 @@ function Evaluator.eval(ast, env, isTail)
 						else
 							i = i + 1
 						end
+					elseif type(key) == "string" and key:sub(1, 1) == ":" then
+						local keyName = key:sub(2)
+						if keyName == "time" then
+							time = Evaluator.eval(elements[i + 1], env, false)
+							i = i + 2
+						elseif keyName == "easing" then
+							easing = elements[i + 1].value
+							i = i + 2
+						else
+							local propName = keyName:sub(1, 1):upper() .. keyName:sub(2)
+							local propVal = Evaluator.eval(elements[i + 1], env, false)
+							props[propName] = propVal
+							i = i + 2
+						end
 					else
 						i = i + 1
 					end
@@ -676,10 +874,9 @@ function Evaluator.eval(ast, env, isTail)
 				local eventName = elements[3].value
 				local handler = Evaluator.eval(elements[4], env, false)
 				local connection
-				local wrappedHandler
 				if type(handler) == "table" and handler.type == "function" then
 					local lispFn = handler
-					wrappedHandler = function(...)
+					handler = function(...)
 						connection:Disconnect()
 						local args = {...}
 						local localEnv = {}
@@ -692,12 +889,12 @@ function Evaluator.eval(ast, env, isTail)
 						return result
 					end
 				else
-					wrappedHandler = function(...)
+					handler = function(...)
 						connection:Disconnect()
 						handler(...)
 					end
 				end
-				connection = obj[eventName]:Connect(wrappedHandler)
+				connection = obj[eventName]:Connect(handler)
 				return connection
 
 			elseif formName == "on-touched" then
@@ -718,6 +915,30 @@ function Evaluator.eval(ast, env, isTail)
 				else
 					return obj.Touched:Connect(handler)
 				end
+
+			elseif formName == "syntax-rules" then
+				local literalsList = elements[2].elements
+				local literals = {}
+				for _, lit in ipairs(literalsList) do
+					table.insert(literals, lit.name)
+				end
+
+				local rules = {}
+				for i = 3, #elements do
+					local rule = elements[i]
+					if rule.type == "list" and #rule.elements == 2 then
+						local pattern = rule.elements[1]
+						local template = rule.elements[2]
+						table.insert(rules, {pattern = pattern, template = template})
+					end
+				end
+
+				return {
+					type = "syntax-rules",
+					rules = rules,
+					literals = literals,
+					closure = env
+				}
 
 			elseif formName == "defmacro" then
 				local macroName = elements[2].name
@@ -819,19 +1040,28 @@ function Evaluator.eval(ast, env, isTail)
 				local className = elements[2].value
 				local obj = Instance.new(className)
 				local i = 3
-				while i < #elements do
-					local key = elements[i]
-					local val = elements[i + 1]
-					if key.type == "symbol" and key.name:sub(1, 1) == ":" then
-						local propName = key.name:sub(2)
-						local propVal = Evaluator.eval(val, env, false)
-						if propName == "BrickColor" and type(propVal) == "string" then
-							propVal = BrickColor.new(propVal)
+				while i <= #elements do
+					local elem = elements[i]
+					if elem.type == "symbol" and elem.name:sub(1, 1) == ":" then
+						local propName = elem.name:sub(2)
+						if i + 1 <= #elements then
+							local propVal = Evaluator.eval(elements[i + 1], env, false)
+							if propName == "BrickColor" and type(propVal) == "string" then
+								propVal = BrickColor.new(propVal)
+							end
+							obj[propName] = propVal
+							i = i + 2
+						else
+							i = i + 1
 						end
-						obj[propName] = propVal
-						i = i + 2
+					elseif elem.type == "list" then
+						local child = Evaluator.eval(elem, env, false)
+						if child and type(child) == "userdata" then
+							child.Parent = obj
+						end
+						i = i + 1
 					else
-						break
+						i = i + 1
 					end
 				end
 				return obj
@@ -921,7 +1151,12 @@ function Evaluator.eval(ast, env, isTail)
 			end
 		end
 
+		-- обычный вызов функции (или syntax-rules макрос из окружения)
 		local func = Evaluator.eval(first, env, false)
+		if type(func) == "table" and func.type == "syntax-rules" then
+			return expandSyntaxRules(func, elements, env, isTail)
+		end
+
 		local args = {}
 		for i = 2, #elements do
 			table.insert(args, Evaluator.eval(elements[i], env, false))
@@ -935,10 +1170,15 @@ function Evaluator.eval(ast, env, isTail)
 end
 
 function Evaluator.evaluate(ast, env)
+	print("[Evaluator.evaluate] Starting evaluation")
 	local result = Evaluator.eval(ast, env, false)
+	print("[Evaluator.evaluate] After eval, result type: " .. type(result))
 	while type(result) == "table" and result.tailcall do
+		print("[Evaluator.evaluate] Tailcall detected, applying...")
 		result = applyFunction(result.func, result.args)
+		print("[Evaluator.evaluate] After tailcall, result type: " .. type(result))
 	end
+	print("[Evaluator.evaluate] Final result type: " .. type(result))
 	return result
 end
 
