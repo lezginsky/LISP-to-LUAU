@@ -1,7 +1,7 @@
 --!strict
 
 local Reader = require(script.Parent.Reader)
-local Evaluator = require(script.Parent.Evaluator)
+local CEKMachine = require(script.Parent.CEKMachine)
 local Environment = require(script.Parent.Environment)
 
 local Runtime = {}
@@ -44,43 +44,43 @@ local function toLispString(val: any, depth: number?, visited: any?): string
 	elseif type(val) == "table" then
 		if visited[val] then return "#<circular>" end
 		visited[val] = true
-		local mt = (val :: any)
-		if mt.type == "function" then return "#<function>"
-		elseif mt.type == "syntax-rules" then return "#<syntax-rules>"
-		elseif mt.car ~= nil and mt.cdr ~= nil then
-			return "(" .. toLispString(mt.car, depth + 1, visited) .. " . " .. toLispString(mt.cdr, depth + 1, visited) .. ")"
-		else
-			local items = {}
-			for k, v in val do
-				if type(k) == "number" and not IGNORED_KEYS[k] then
-					table.insert(items, toLispString(v, depth + 1, visited))
-				end
-			end
-			return "(" .. table.concat(items, " ") .. ")"
+
+		local rawType = rawget(val, "type")
+		if rawType == "function" then return "#<function>" end
+		if rawType == "syntax-rules" then return "#<syntax-rules>" end
+
+		local car = rawget(val, "car")
+		local cdr = rawget(val, "cdr")
+		if car ~= nil and cdr ~= nil then
+			return "(" .. toLispString(car, depth + 1, visited) .. " . " .. toLispString(cdr, depth + 1, visited) .. ")"
 		end
+
+		local items = {}
+		local len = #val
+		for i = 1, len do
+			local v = rawget(val, i)
+			if v ~= nil and not IGNORED_KEYS[i] then
+				table.insert(items, toLispString(v, depth + 1, visited))
+			end
+		end
+		return "(" .. table.concat(items, " ") .. ")"
 	else
 		return tostring(val)
 	end
 end
 
 function Runtime.execute(lispCode: string): (string?, string?)
-	print("[Runtime] Parsing...")
 	local ast = Reader.parse(lispCode)
-	print("[Runtime] AST parsed, expressions: " .. #ast)
 	if #ast == 0 then return nil end
 
 	local results = {}
-	for i, expr in ipairs(ast) do
-		print("[Runtime] Evaluating expression #" .. i)
-		local success, result = pcall(function()
-			return Evaluator.evaluate(expr, Runtime.env)
-		end)
+	for _, expr in ast do
+		local success, result = pcall(CEKMachine.evaluate, expr, Runtime.env)
 		if not success then
 			local errMsg = "RUNTIME ERROR: " .. tostring(result)
-			print("[Runtime] ERROR: " .. errMsg)
+			print(errMsg)
 			return nil, errMsg
 		end
-		print("[Runtime] Expression #" .. i .. " returned: " .. toLispString(result, 0, {}))
 		table.insert(results, result)
 	end
 
@@ -94,7 +94,7 @@ function Runtime.execute(lispCode: string): (string?, string?)
 		end
 		output = table.concat(parts, "\n")
 	end
-	print("[Runtime] Final output: " .. output)
+	print(output)
 	return output, nil
 end
 
