@@ -1,7 +1,12 @@
+--!strict
+
 local PlayerGui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RemoteEvent = ReplicatedStorage:WaitForChild("LispExec")
+
+local Runtime = require(ReplicatedStorage:WaitForChild("LispMachine"):WaitForChild("Runtime"))
+Runtime.env["player"] = game.Players.LocalPlayer
 
 local TerminalGUI = Instance.new("ScreenGui")
 TerminalGUI.Name = "TerminalGUI"
@@ -43,7 +48,7 @@ ScrollingFrame.Parent = OutputFrame
 
 local GridLayout = Instance.new("UIGridLayout")
 GridLayout.CellSize = UDim2.new(1, 0, 0, 0)
-GridLayout.CellPadding = UDim2.new(0, 0, 0, 6)
+GridLayout.CellPadding = UDim2.new(0, 0, 0, 12)
 GridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 GridLayout.VerticalAlignment = Enum.VerticalAlignment.Top
 GridLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -75,11 +80,12 @@ InputBox.TextWrapped = false
 InputBox.MultiLine = false
 InputBox.Parent = InputFrame
 
-local history = {}
-local historyIndex = 0
-local lineCounter = 0
+local history: { string } = {}
+local historyIndex: number = 0
+local lineCounter: number = 0
+local mode: string = "menu"
 
-local function addOutput(text, color)
+local function addOutput(text: string, color: Color3?): ()
 	local line = Instance.new("TextLabel")
 	line.BackgroundTransparency = 1
 	line.Font = Enum.Font.Code
@@ -99,18 +105,58 @@ local function addOutput(text, color)
 	ScrollingFrame.CanvasPosition = Vector2.new(0, ScrollingFrame.CanvasSize.Y.Offset)
 end
 
-local function executeCommand(input)
+local function setMode(newMode: string): ()
+	mode = newMode
+	if mode == "server" then
+		InputBox.PlaceholderText = "[server] enter LISP code..."
+		addOutput("Switched to SERVER mode", Color3.fromRGB(255, 255, 0))
+	elseif mode == "local" then
+		InputBox.PlaceholderText = "[local] enter LISP code..."
+		addOutput("Switched to LOCAL mode", Color3.fromRGB(255, 255, 0))
+	elseif mode == "menu" then
+		InputBox.PlaceholderText = "[s]erver or [l]ocal? (type s or l)"
+		addOutput("Select mode: [s]erver or [l]ocal?", Color3.fromRGB(255, 255, 0))
+	end
+end
+
+local function executeCommand(input: string): ()
 	local trimmed = input:gsub("^%s+", ""):gsub("%s+$", "")
 	if trimmed == "" then return end
+
+	if mode == "menu" then
+		if trimmed == "s" then
+			setMode("server")
+		elseif trimmed == "l" then
+			setMode("local")
+		else
+			addOutput("Invalid choice. Type 's' or 'l'", Color3.fromRGB(255, 100, 100))
+		end
+		return
+	end
+
+	if trimmed == "menu" then
+		setMode("menu")
+		return
+	end
 
 	table.insert(history, trimmed)
 	historyIndex = #history + 1
 
 	addOutput("> " .. trimmed, Color3.fromRGB(0, 255, 0))
-	RemoteEvent:FireServer(trimmed)
+
+	if mode == "server" then
+		RemoteEvent:FireServer(trimmed)
+	elseif mode == "local" then
+		local success, result = pcall(Runtime.execute, trimmed)
+		if not success then
+			addOutput("ERROR: " .. tostring(result), Color3.fromRGB(255, 50, 50))
+		else
+			addOutput(tostring(result), Color3.fromRGB(100, 255, 100))
+		end
+	end
 end
 
-RemoteEvent.OnClientEvent:Connect(function(result, isError)
+RemoteEvent.OnClientEvent:Connect(function(result: string, isError: boolean): ()
 	if isError then
 		addOutput("ERROR: " .. tostring(result), Color3.fromRGB(255, 50, 50))
 	else
@@ -118,7 +164,7 @@ RemoteEvent.OnClientEvent:Connect(function(result, isError)
 	end
 end)
 
-InputBox.FocusLost:Connect(function(enterPressed)
+InputBox.FocusLost:Connect(function(enterPressed: boolean): ()
 	if enterPressed then
 		local text = InputBox.Text
 		InputBox.Text = ""
@@ -128,7 +174,7 @@ InputBox.FocusLost:Connect(function(enterPressed)
 	end
 end)
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean): ()
 	if gameProcessed then return end
 
 	if input.KeyCode == Enum.KeyCode.Up then
@@ -147,4 +193,5 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
+setMode("menu")
 InputBox:CaptureFocus()
