@@ -1,3 +1,5 @@
+--!strict
+
 local Evaluator = {}
 
 local function qqExpand(template, env)
@@ -79,6 +81,7 @@ local function parseLambdaArgs(argsAst)
 			else
 				if mode == "required" then
 					table.insert(required, name)
+					i = i + 1  -- ИСПРАВЛЕНО
 				elseif mode == "optional" then
 					if i + 1 <= #elements and elements[i + 1].type ~= "symbol" then
 						table.insert(optional, {name = name, default = elements[i + 1]})
@@ -158,27 +161,33 @@ local function bindLambdaArgs(argsInfo, args, localEnv)
 end
 
 local function applyFunction(func, args)
-	print("[applyFunction] Applying function...")
 	if type(func) == "table" and func.type == "function" then
-		print("[applyFunction] Lisp function, args: " .. #args)
 		local localEnv = {}
 		setmetatable(localEnv, {__index = func.closure})
 		bindLambdaArgs(func.argsInfo, args, localEnv)
 		local result = nil
 		for i, expr in ipairs(func.body) do
-			print("[applyFunction] Evaluating body expr #" .. i)
 			local isTail = (i == #func.body)
 			result = Evaluator.eval(expr, localEnv, isTail)
 			if isTail and type(result) == "table" and result.tailcall then
-				print("[applyFunction] Body returned tailcall")
 				return result
 			end
 		end
-		print("[applyFunction] Returning: " .. toLispString(result, 0, {}))
 		return result
 	elseif type(func) == "function" then
-		print("[applyFunction] Native function")
-		return func(table.unpack(args))
+		local resolvedArgs = {}
+		for _, arg in ipairs(args) do
+			if type(arg) == "table" and arg.tailcall then
+				local resolved = arg
+				while type(resolved) == "table" and resolved.tailcall do
+					resolved = applyFunction(resolved.func, resolved.args)
+				end
+				table.insert(resolvedArgs, resolved)
+			else
+				table.insert(resolvedArgs, arg)
+			end
+		end
+		return func(table.unpack(resolvedArgs))
 	else
 		error("Not a function: " .. tostring(func))
 	end
@@ -195,7 +204,7 @@ local function expandSyntaxRules(macro, elements, env, isTail)
 		"define", "lambda", "if", "begin", "quote", "set!", "let", "let*", "letrec",
 		"named-let", "cond", "case", "try", "and", "or", "for", "while", "when", "unless",
 		"struct", "tween", "once", "on-touched", "syntax-rules", "defmacro",
-		"quasiquote", "eval", "apply", "cons", "car", "cdr", "list", "instance", "service", "connect"
+		"quasiquote", "eval", "apply", "cons", "car", "cdr", "list", "instance", "service", "connect", "print"
 	}
 
 	for _, rule in ipairs(macro.rules) do
@@ -412,7 +421,6 @@ function Evaluator.eval(ast, env, isTail)
 			if formName == "define" then
 				local varName = elements[2].name
 				local value = Evaluator.eval(elements[3], env, false)
-				print("[eval/define] value type: " .. type(value))
 				env[varName] = value
 				return value
 
@@ -1170,15 +1178,10 @@ function Evaluator.eval(ast, env, isTail)
 end
 
 function Evaluator.evaluate(ast, env)
-	print("[Evaluator.evaluate] Starting evaluation")
 	local result = Evaluator.eval(ast, env, false)
-	print("[Evaluator.evaluate] After eval, result type: " .. type(result))
 	while type(result) == "table" and result.tailcall do
-		print("[Evaluator.evaluate] Tailcall detected, applying...")
 		result = applyFunction(result.func, result.args)
-		print("[Evaluator.evaluate] After tailcall, result type: " .. type(result))
 	end
-	print("[Evaluator.evaluate] Final result type: " .. type(result))
 	return result
 end
 
