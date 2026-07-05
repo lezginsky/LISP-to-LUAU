@@ -6,7 +6,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RemoteEvent = ReplicatedStorage:WaitForChild("LispExec")
 
 local Runtime = require(ReplicatedStorage:WaitForChild("LispMachine"):WaitForChild("Runtime"))
-Runtime.env["player"] = game.Players.LocalPlayer
 
 local TerminalGUI = Instance.new("ScreenGui")
 TerminalGUI.Name = "TerminalGUI"
@@ -108,14 +107,14 @@ end
 local function setMode(newMode: string): ()
 	mode = newMode
 	if mode == "server" then
-		InputBox.PlaceholderText = "[server] enter LISP code..."
+		InputBox.PlaceholderText = "[SERVER] Enter Lisp code..."
 		addOutput("Switched to SERVER mode", Color3.fromRGB(255, 255, 0))
 	elseif mode == "local" then
-		InputBox.PlaceholderText = "[local] enter LISP code..."
+		InputBox.PlaceholderText = "[LOCAL] Enter Lisp code..."
 		addOutput("Switched to LOCAL mode", Color3.fromRGB(255, 255, 0))
 	elseif mode == "menu" then
-		InputBox.PlaceholderText = "[s]erver or [l]ocal? (type s or l)"
-		addOutput("Select mode: [s]erver or [l]ocal?", Color3.fromRGB(255, 255, 0))
+		InputBox.PlaceholderText = "[S]erver or [L]ocal? (type s or l)"
+		addOutput("Select mode: [S]erver or [L]ocal?", Color3.fromRGB(255, 255, 0))
 	end
 end
 
