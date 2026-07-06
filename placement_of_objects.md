@@ -1,7 +1,6 @@
 - ReplicatedStorage
     - LispMachine
         - Environment
-        - Evaluator
         - Runtime
         - Reader
         - CEKMachine
