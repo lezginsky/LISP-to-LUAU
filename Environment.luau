@@ -29,11 +29,8 @@ function Environment.create(): { [string]: any }
 	env.__macros__ = {}
 
 	env["+"] = function(...: number): number
-		local args = {...}
 		local result = 0
-		for _, v in ipairs(args) do
-			result = result + (type(v) == "number" and v or 0)
-		end
+		for _, v in ipairs({...}) do result = result + v end
 		return result
 	end
 	env["-"] = function(a: number, b: number): number return a - b end
@@ -86,9 +83,47 @@ function Environment.create(): { [string]: any }
 		return fn(table.unpack(args))
 	end
 
+	env["cons"] = function(car: any, cdr: any): any
+		if cdr == nil then
+			return {car}
+		elseif type(cdr) == "table" and #cdr > 0 then
+			local result = {car}
+			for _, v in ipairs(cdr) do table.insert(result, v) end
+			return result
+		else
+			return {car = car, cdr = cdr}
+		end
+	end
+	env["car"] = function(lst: any): any
+		if lst == nil then return nil end
+		if type(lst) == "table" then
+			if #lst > 0 then return lst[1] end
+			if rawget(lst, "car") ~= nil then return rawget(lst, "car") end
+		end
+		return nil
+	end
+	env["cdr"] = function(lst: any): any
+		if lst == nil then return nil end
+		if type(lst) == "table" then
+			if #lst > 1 then
+				local result = {}
+				for i = 2, #lst do table.insert(result, lst[i]) end
+				return result
+			elseif #lst == 1 then
+				return {}
+			elseif rawget(lst, "cdr") ~= nil then
+				return rawget(lst, "cdr")
+			end
+		end
+		return nil
+	end
+	env["list"] = function(...: any): { any } return {...} end
 	env["null?"] = function(lst: any): boolean
 		if lst == nil then return true end
-		if type(lst) == "table" and #lst == 0 then return true end
+		if type(lst) == "table" then
+			if rawget(lst, "car") ~= nil or rawget(lst, "cdr") ~= nil then return false end
+			if #lst == 0 then return true end
+		end
 		return false
 	end
 
@@ -99,33 +134,26 @@ function Environment.create(): { [string]: any }
 	env["string-append"] = function(...: string): string
 		return table.concat({...})
 	end
-
 	env["string-length"] = function(s: string): number
 		return #s
 	end
-
 	env["string-ref"] = function(s: string, i: number): string
 		return s:sub(i, i)
 	end
-
 	env["substring"] = function(s: string, start: number, finish: number?): string
 		return s:sub(start, finish or #s)
 	end
-
 	env["string-upcase"] = function(s: string): string
 		return s:upper()
 	end
-
 	env["string-downcase"] = function(s: string): string
 		return s:lower()
 	end
-
 	env["string-split"] = function(s: string, sep: string): { string }
 		local result = {}
 		for part in s:gmatch("[^" .. sep .. "]+") do table.insert(result, part) end
 		return result
 	end
-
 	env["string-trim"] = function(s: string): string
 		return s:match("^%s*(.-)%s*$") or s
 	end
@@ -140,7 +168,6 @@ function Environment.create(): { [string]: any }
 		end
 		return copy
 	end
-
 	env["filter"] = function(fn: any, lst: { any }): { any }
 		local result = {}
 		for _, v in lst do
@@ -148,19 +175,16 @@ function Environment.create(): { [string]: any }
 		end
 		return result
 	end
-
 	env["reduce"] = function(fn: any, init: any, lst: { any }): any
 		local acc = init
 		for _, v in lst do acc = fn(acc, v) end
 		return acc
 	end
-
 	env["map"] = function(fn: any, lst: { any }): { any }
 		local result = {}
 		for _, v in lst do table.insert(result, fn(v)) end
 		return result
 	end
-
 	env["range"] = function(start: number, stop: number, step: number?): { number }
 		step = step or 1
 		local result = {}
@@ -171,14 +195,11 @@ function Environment.create(): { [string]: any }
 		end
 		return result
 	end
-
 	env["zip"] = function(...: { any }): { { any } }
 		local lists = {...}
 		local result = {}
 		local minLen = math.huge
-		for _, lst in lists do
-			if #lst < minLen then minLen = #lst end
-		end
+		for _, lst in lists do if #lst < minLen then minLen = #lst end end
 		for i = 1, minLen do
 			local tuple = {}
 			for _, lst in lists do table.insert(tuple, lst[i]) end
@@ -196,7 +217,6 @@ function Environment.create(): { [string]: any }
 			return fn(table.unpack(args))
 		end
 	end
-
 	env["compose"] = function(...: any): any
 		local fns = {...}
 		return function(x: any): any
@@ -205,22 +225,18 @@ function Environment.create(): { [string]: any }
 			return result
 		end
 	end
-
 	env["printf"] = function(fmt: string, ...: any): ()
 		print(string.format(fmt, ...))
 	end
-
 	env["time"] = function(fn: any): number
 		local start = os.clock()
 		fn()
 		return os.clock() - start
 	end
-
 	env["assert"] = function(condition: any, msg: string?): any
 		if not condition then error(msg or "assertion failed") end
 		return condition
 	end
-
 	env["memoize"] = function(fn: any): any
 		local cache: { [string]: any } = {}
 		return function(...: any): any
@@ -234,15 +250,12 @@ function Environment.create(): { [string]: any }
 		local raycastParams = params or RaycastParams.new()
 		return workspace:Raycast(origin, direction, raycastParams)
 	end
-
 	env["disconnect"] = function(connection: any): ()
 		connection:Disconnect()
 	end
-
 	env["get-prop"] = function(obj: any, propName: string): any
 		return obj[propName]
 	end
-
 	env["tostring"] = function(val: any): string
 		return tostring(val)
 	end
@@ -251,55 +264,34 @@ function Environment.create(): { [string]: any }
 		local useMock = true
 		local runService = game:GetService("RunService")
 		if not runService:IsStudio() then
-			local success, ds = pcall(function()
-				return game:GetService("DataStoreService"):GetDataStore(name)
-			end)
+			local success, ds = pcall(function() return game:GetService("DataStoreService"):GetDataStore(name) end)
 			if success then useMock = false end
 		end
 		if useMock then
 			local mockData: { [string]: any } = {}
 			return {
-				SetAsync = function(_: any, key: string, value: any): boolean
-					mockData[key] = value
-					return true
-				end,
-				GetAsync = function(_: any, key: string): any
-					return mockData[key]
-				end,
-				UpdateAsync = function(_: any, key: string, callback: any): boolean
-					mockData[key] = callback(mockData[key])
-					return true
-				end,
-				RemoveAsync = function(_: any, key: string): boolean
-					mockData[key] = nil
-					return true
-				end
+				SetAsync = function(_: any, key: string, value: any): boolean mockData[key] = value; return true end,
+				GetAsync = function(_: any, key: string): any return mockData[key] end,
+				UpdateAsync = function(_: any, key: string, callback: any): boolean mockData[key] = callback(mockData[key]); return true end,
+				RemoveAsync = function(_: any, key: string): boolean mockData[key] = nil; return true end
 			}
-		else
-			return ds
-		end
+		else return ds end
 	end
-
 	env["data-set!"] = function(ds: any, key: string, value: any): any
 		local success, err = pcall(function() ds:SetAsync(key, value) end)
 		if not success then error("DataStore set failed: " .. tostring(err)) end
 		return value
 	end
-
 	env["data-get"] = function(ds: any, key: string): any
 		local success, result = pcall(function() return ds:GetAsync(key) end)
 		if not success then error("DataStore get failed: " .. tostring(result)) end
 		return result
 	end
-
 	env["data-update!"] = function(ds: any, key: string, fn: any): boolean
-		local success, err = pcall(function()
-			ds:UpdateAsync(key, function(old: any): any return fn(old) end)
-		end)
+		local success, err = pcall(function() ds:UpdateAsync(key, function(old: any): any return fn(old) end) end)
 		if not success then error("DataStore update failed: " .. tostring(err)) end
 		return true
 	end
-
 	env["data-remove!"] = function(ds: any, key: string): boolean
 		local success, err = pcall(function() ds:RemoveAsync(key) end)
 		if not success then error("DataStore remove failed: " .. tostring(err)) end
@@ -312,14 +304,12 @@ function Environment.create(): { [string]: any }
 		if not success then error("HTTP GET failed: " .. tostring(result)) end
 		return result
 	end
-
 	env["http-post"] = function(url: string, body: string): string
 		local hs = game:GetService("HttpService")
 		local success, result = pcall(function() return hs:PostAsync(url, body) end)
 		if not success then error("HTTP POST failed: " .. tostring(result)) end
 		return result
 	end
-
 	env["http-get-async"] = function(url: string, callback: any): boolean
 		local hs = game:GetService("HttpService")
 		task.spawn(function()
@@ -333,15 +323,12 @@ function Environment.create(): { [string]: any }
 	env["udim2"] = function(xScale: number, xOffset: number, yScale: number, yOffset: number): UDim2
 		return UDim2.new(xScale, xOffset, yScale, yOffset)
 	end
-
 	env["udim"] = function(scale: number, offset: number): UDim
 		return UDim.new(scale, offset)
 	end
-
 	env["rect"] = function(x0: number, y0: number, x1: number, y1: number): Rect
 		return Rect.new(x0, y0, x1, y1)
 	end
-
 	env["font"] = function(name: string): Enum.Font
 		return Enum.Font[name] or Enum.Font.SourceSans
 	end
@@ -356,11 +343,7 @@ function Environment.create(): { [string]: any }
 		sound:Play()
 		return sound
 	end
-
-	env["stop-sound"] = function(sound: Sound): ()
-		sound:Stop()
-	end
-
+	env["stop-sound"] = function(sound: Sound): () sound:Stop() end
 	env["sound"] = function(soundId: string, ...: any): Sound
 		local props = parseProps({...})
 		local sound = Instance.new("Sound")
@@ -374,18 +357,15 @@ function Environment.create(): { [string]: any }
 	env["animator"] = function(humanoid: Humanoid): Animator
 		return humanoid:WaitForChild("Animator") :: Animator
 	end
-
 	env["load-animation"] = function(animator: Animator, animationId: string): AnimationTrack
 		local animation = Instance.new("Animation")
 		animation.AnimationId = animationId
 		return animator:LoadAnimation(animation)
 	end
-
 	env["play-animation"] = function(track: AnimationTrack): AnimationTrack
 		track:Play()
 		return track
 	end
-
 	env["stop-animation"] = function(track: AnimationTrack): AnimationTrack
 		track:Stop()
 		return track
@@ -399,7 +379,6 @@ function Environment.create(): { [string]: any }
 		bv.Parent = parent
 		return bv
 	end
-
 	env["body-force"] = function(parent: Instance, ...: any): BodyForce
 		local props = parseProps({...})
 		local bf = Instance.new("BodyForce")
@@ -407,7 +386,6 @@ function Environment.create(): { [string]: any }
 		bf.Parent = parent
 		return bf
 	end
-
 	env["body-position"] = function(parent: Instance, ...: any): BodyPosition
 		local props = parseProps({...})
 		local bp = Instance.new("BodyPosition")
@@ -416,7 +394,6 @@ function Environment.create(): { [string]: any }
 		bp.Parent = parent
 		return bp
 	end
-
 	env["body-gyro"] = function(parent: Instance, ...: any): BodyGyro
 		local props = parseProps({...})
 		local bg = Instance.new("BodyGyro")
