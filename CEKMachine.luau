@@ -126,6 +126,167 @@ local function bindLambdaArgs(argsInfo: any, args: { any }, localEnv: { [string]
 	end
 end
 
+local function expandSyntaxRules(macro: any, elements: { any }, env: { [string]: any }): any
+	local macroName = elements[1].name
+	local macroArgs = {}
+	for i = 2, #elements do table.insert(macroArgs, elements[i]) end
+
+	local builtins = {
+		"define", "lambda", "if", "begin", "quote", "set!", "let", "let*", "letrec",
+		"named-let", "cond", "case", "try", "and", "or", "for", "while", "when", "unless",
+		"struct", "tween", "once", "on-touched", "syntax-rules", "defmacro",
+		"quasiquote", "eval", "apply", "cons", "car", "cdr", "list", "instance", "service", "connect",
+		"call/cc", "print", "warn", "+", "-", "*", "/", "%", "^", "=", "<", ">", "<=", ">=", "~=",
+		"raycast", "play-sound", "body-velocity"
+	}
+
+	for _, rule in ipairs(macro.rules) do
+		local pattern = rule.pattern
+		local template = rule.template
+		if pattern.type == "list" and #pattern.elements > 0 then
+			local patFirst = pattern.elements[1]
+			if patFirst.type == "symbol" and patFirst.name == macroName then
+				local bindings = {}
+				local argIdx = 1
+				local matchSuccess = true
+
+				local function matchPattern(pat, args, isFirst)
+					if pat.type == "symbol" then
+						local name = pat.name
+						local isLiteral = false
+						if isFirst then isLiteral = true
+						else
+							for _, lit in ipairs(macro.literals) do
+								if lit == name then isLiteral = true break end
+							end
+						end
+						if isLiteral then
+							if argIdx <= #args then
+								local arg = args[argIdx]
+								argIdx = argIdx + 1
+								return (arg.type == "symbol" and arg.name == name)
+							end
+							return false
+						end
+						if name == "..." then
+							local rest = {}
+							while argIdx <= #args do
+								table.insert(rest, args[argIdx])
+								argIdx = argIdx + 1
+							end
+							bindings["..."] = rest
+							return true
+						end
+						if argIdx <= #args then
+							bindings[name] = args[argIdx]
+							argIdx = argIdx + 1
+							return true
+						end
+						return false
+					elseif pat.type == "list" then
+						if argIdx > #args then return false end
+						local arg = args[argIdx]
+						argIdx = argIdx + 1
+						if arg.type ~= "list" then return false end
+						local subArgs = arg.elements
+						local savedBindings = {}
+						for kk, vv in pairs(bindings) do savedBindings[kk] = vv end
+						local subIdx = 1
+						local savedArgIdx = argIdx
+						argIdx = 1
+						for _, subPat in ipairs(pat.elements) do
+							if subPat.type == "symbol" and subPat.name == "..." then
+								local rest = {}
+								while subIdx <= #subArgs do
+									table.insert(rest, subArgs[subIdx])
+									subIdx = subIdx + 1
+								end
+								if #pat.elements >= 2 then
+									local varName = pat.elements[2].name
+									bindings[varName] = rest
+								end
+								return true
+							end
+							if subIdx > #subArgs then
+								for kk in pairs(bindings) do bindings[kk] = nil end
+								for kk, vv in pairs(savedBindings) do bindings[kk] = vv end
+								return false
+							end
+							if not matchPattern(subPat, { subArgs[subIdx] }, false) then
+								for kk in pairs(bindings) do bindings[kk] = nil end
+								for kk, vv in pairs(savedBindings) do bindings[kk] = vv end
+								return false
+							end
+							subIdx = subIdx + 1
+						end
+						argIdx = savedArgIdx
+						return true
+					else
+						if argIdx <= #args then
+							local arg = args[argIdx]
+							argIdx = argIdx + 1
+							return arg.type == pat.type and arg.value == pat.value
+						end
+						return false
+					end
+				end
+
+				for i = 2, #pattern.elements do
+					if not matchPattern(pattern.elements[i], macroArgs, (i == 2)) then
+						matchSuccess = false
+						break
+					end
+				end
+
+				if matchSuccess then
+					local gensymCounter = 0
+					local gensymMap = {}
+
+					local function gensym(prefix)
+						gensymCounter = gensymCounter + 1
+						return prefix .. "_" .. tostring(gensymCounter)
+					end
+
+					local function isBuiltin(name)
+						for _, b in ipairs(builtins) do if b == name then return true end end
+						return false
+					end
+
+					local function rename(node)
+						if node.type == "symbol" then
+							local name = node.name
+							if bindings[name] then return bindings[name] end
+							for _, lit in ipairs(macro.literals) do if lit == name then return { type = "symbol", name = name } end end
+							if isBuiltin(name) then return { type = "symbol", name = name } end
+							if not gensymMap[name] then gensymMap[name] = gensym(name) end
+							return { type = "symbol", name = gensymMap[name] }
+						elseif node.type == "list" then
+							local newElements = {}
+							for _, elem in ipairs(node.elements) do
+								if elem.type == "symbol" and elem.name == "..." then
+									local restBind = bindings["..."]
+									if restBind then
+										for _, restElem in ipairs(restBind) do table.insert(newElements, restElem) end
+									end
+								else
+									table.insert(newElements, rename(elem))
+								end
+							end
+							return { type = "list", elements = newElements }
+						else
+							return node
+						end
+					end
+
+					local expanded = rename(template)
+					return expanded
+				end
+			end
+		end
+	end
+	error("syntax-rules: no matching pattern")
+end
+
 function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 	local control: any = ast
 	local env: { [string]: any } = globalEnv
@@ -149,16 +310,17 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 						val = name
 					else
 						local current: any = env
-						local found = nil
+						local found: any = nil
 						while current do
-							if rawget(current, name) ~= nil then
-								found = rawget(current, name)
-								break
-							end
+							found = rawget(current, name)
+							if found ~= nil then break end
 							local mt = getmetatable(current)
 							if mt and mt.__index then
 								if type(mt.__index) == "table" then
 									current = mt.__index
+								elseif type(mt.__index) == "function" then
+									found = mt.__index(current, name)
+									break
 								else
 									break
 								end
@@ -167,9 +329,13 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 							end
 						end
 						if found == nil then
-							if _G[name] ~= nil then found = _G[name]
-							elseif _G.game and (_G.game :: any)[name] ~= nil then found = (_G.game :: any)[name]
-							else error("Undefined symbol: " .. name) end
+							if _G[name] ~= nil then
+								found = _G[name]
+							elseif _G.game and (_G.game :: any)[name] ~= nil then
+								found = (_G.game :: any)[name]
+							else
+								error("Undefined symbol: " .. name)
+							end
 						end
 						val = found
 					end
@@ -256,32 +422,264 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 								control = elements[3]
 
 							elseif formName == "let" then
-								local bindingsList = elements[2].elements
-								local body: { any } = {}
-								for i = 3, #elements do table.insert(body, elements[i]) end
-								local newEnv: { [string]: any } = {}
-								setmetatable(newEnv, { __index = env })
-								if #bindingsList > 0 then
-									local binding = bindingsList[1]
-									if binding.type == "list" and #binding.elements == 2 then
-										table.insert(kStack, {
-											type = "let-bind",
-											env = newEnv,
-											varName = binding.elements[1].name,
-											bindings = bindingsList,
-											index = 1,
-											body = body
-										})
-										control = binding.elements[2]
+								if #elements < 3 then
+									error("Malformed let expression")
+								end
+								local second = elements[2]
+								if second.type == "symbol" then
+									-- Именованный let: (let loop ((vars) ...) body)
+									local loopName = second.name
+									local bindingsNode = elements[3]
+									if not bindingsNode or bindingsNode.type ~= "list" then
+										error("Malformed named-let bindings")
 									end
+									local bindingsList = bindingsNode.elements or {}
+									local body: { any } = {}
+									for i = 4, #elements do table.insert(body, elements[i]) end
+
+									local argsSymbols = {}
+									local initExprs = {}
+									for _, binding in ipairs(bindingsList) do
+										if binding.type == "list" and binding.elements and #binding.elements == 2 then
+											table.insert(argsSymbols, binding.elements[1])
+											table.insert(initExprs, binding.elements[2])
+										end
+									end
+
+									-- Трансформация в: ((lambda (loop) (set! loop (lambda (xs) body)) (loop lst)) #f)
+									local lambdaBody = {
+										type = "list",
+										elements = {
+											{ type = "symbol", name = "begin" },
+											{
+												type = "list",
+												elements = {
+													{ type = "symbol", name = "set!" },
+													{ type = "symbol", name = loopName },
+													{
+														type = "list",
+														elements = {
+															{ type = "symbol", name = "lambda" },
+															{ type = "list", elements = argsSymbols },
+															table.unpack(body)
+														}
+													}
+												}
+											},
+											{
+												type = "list",
+												elements = {
+													{ type = "symbol", name = loopName },
+													table.unpack(initExprs)
+												}
+											}
+										}
+									}
+
+									local transformedAst = {
+										type = "list",
+										elements = {
+											{
+												type = "list",
+												elements = {
+													{ type = "symbol", name = "lambda" },
+													{ type = "list", elements = { { type = "symbol", name = loopName } } },
+													lambdaBody
+												}
+											},
+											{ type = "boolean", value = false }
+										}
+									}
+
+									control = transformedAst
 								else
-									if #body > 0 then
-										control = body[1]
-										env = newEnv
+									-- Обычный let: (let ((vars) ...) body)
+									local bindingsList = elements[2].elements
+									local body: { any } = {}
+									for i = 3, #elements do table.insert(body, elements[i]) end
+									local newEnv: { [string]: any } = {}
+									setmetatable(newEnv, { __index = env })
+									if #bindingsList > 0 then
+										local binding = bindingsList[1]
+										if binding.type == "list" and #binding.elements == 2 then
+											table.insert(kStack, {
+												type = "let-bind",
+												env = newEnv,
+												varName = binding.elements[1].name,
+												bindings = bindingsList,
+												index = 1,
+												body = body
+											})
+											control = binding.elements[2]
+										end
 									else
-										val = nil
+										if #body > 0 then
+											control = body[1]
+											env = newEnv
+										else
+											val = nil
+										end
 									end
 								end
+
+							elseif formName == "cond" then
+								local function buildIf(clauses: { any }): any
+									if #clauses == 0 then
+										return { type = "nil" }
+									end
+									local clause = clauses[1]
+									if clause.type == "list" and #clause.elements >= 1 then
+										local test = clause.elements[1]
+										if test.type == "symbol" and test.name == "else" then
+											if #clause.elements > 1 then
+												return clause.elements[2]
+											else
+												return { type = "nil" }
+											end
+										else
+											local thenExpr = nil
+											if #clause.elements > 1 then
+												thenExpr = clause.elements[2]
+											else
+												thenExpr = { type = "nil" }
+											end
+											local elsePart = buildIf({ table.unpack(clauses, 2) })
+											return {
+												type = "list",
+												elements = {
+													{ type = "symbol", name = "if" },
+													test,
+													thenExpr,
+													elsePart
+												}
+											}
+										end
+									end
+									return { type = "nil" }
+								end
+								local ifExpr = buildIf({ table.unpack(elements, 2) })
+								control = ifExpr
+
+							elseif formName == "case" then
+								local key = elements[2]
+								local clauses = { table.unpack(elements, 3) }
+								local function buildIf(): any
+									if #clauses == 0 then return { type = "nil" } end
+									local clause = clauses[1]
+									if clause.type == "list" and #clause.elements >= 1 then
+										local pattern = clause.elements[1]
+										if pattern.type == "symbol" and pattern.name == "else" then
+											if #clause.elements > 1 then return clause.elements[2] end
+											return { type = "nil" }
+										else
+											local thenExpr = nil
+											if #clause.elements > 1 then thenExpr = clause.elements[2] end
+											local rest = { table.unpack(clauses, 2) }
+											local elsePart = buildIf()
+											if pattern.type == "list" then
+												local condExpr = { type = "list", elements = { { type = "symbol", name = "=" }, key, { type = "quote", elements = nil, value = pattern } } }
+												return { type = "list", elements = { { type = "symbol", name = "if" }, condExpr, thenExpr or { type = "nil" }, elsePart } }
+											else
+												local condExpr = { type = "list", elements = { { type = "symbol", name = "=" }, key, pattern } }
+												return { type = "list", elements = { { type = "symbol", name = "if" }, condExpr, thenExpr or { type = "nil" }, elsePart } }
+											end
+										end
+									end
+									return { type = "nil" }
+								end
+								local ifExpr = buildIf()
+								control = ifExpr
+
+							elseif formName == "for" then
+								local init, cond, step, body
+								if #elements == 3 and elements[2].type == "list" then
+									local controlList = elements[2].elements
+									init = controlList[1]
+									cond = controlList[2]
+									step = controlList[3]
+									body = elements[3]
+								else
+									init = elements[2]
+									cond = elements[3]
+									step = elements[4]
+									body = elements[5]
+								end
+								table.insert(kStack, {
+									type = "for-loop",
+									env = env,
+									init = init,
+									cond = cond,
+									step = step,
+									body = body
+								})
+								control = init
+
+							elseif formName == "while" then
+								local cond = elements[2]
+								local body = elements[3]
+								table.insert(kStack, {
+									type = "while-loop",
+									env = env,
+									cond = cond,
+									body = body
+								})
+								control = cond
+
+							elseif formName == "when" then
+								local cond = elements[2]
+								local body = { type = "begin", elements = { table.unpack(elements, 3) } }
+								if #elements == 3 then body = elements[3] end
+								local newIf = {
+									type = "list",
+									elements = {
+										{ type = "symbol", name = "if" },
+										cond,
+										body,
+										{ type = "nil" }
+									}
+								}
+								control = newIf
+
+							elseif formName == "unless" then
+								local cond = elements[2]
+								local body = { type = "begin", elements = { table.unpack(elements, 3) } }
+								if #elements == 3 then body = elements[3] end
+								local newIf = {
+									type = "list",
+									elements = {
+										{ type = "symbol", name = "if" },
+										cond,
+										{ type = "nil" },
+										body
+									}
+								}
+								control = newIf
+
+							elseif formName == "struct" then
+								local structName = elements[2].name
+								local fieldsAst = elements[3]
+								local fields = {}
+								if fieldsAst.type == "list" then
+									for _, fieldSym in ipairs(fieldsAst.elements) do
+										table.insert(fields, fieldSym.name)
+									end
+								end
+								local constructor = function(...)
+									local args = { ... }
+									local obj = {}
+									obj.__struct_type = structName
+									for i, field in ipairs(fields) do
+										obj[field] = args[i]
+									end
+									return obj
+								end
+								env[structName] = constructor
+								for _, field in ipairs(fields) do
+									env[structName .. "-" .. field] = function(obj)
+										return obj[field]
+									end
+								end
+								val = constructor
 
 							elseif formName == "syntax-rules" then
 								local literalsList = elements[2].elements
@@ -295,6 +693,238 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 									end
 								end
 								val = { type = "syntax-rules", rules = rules, literals = literals, closure = env }
+
+							elseif formName == "defmacro" then
+								local macroName = elements[2].name
+								local argsAst = elements[3]
+								local body: { any } = {}
+								for i = 4, #elements do table.insert(body, elements[i]) end
+								local argsInfo = parseLambdaArgs(argsAst)
+								local macroFn = {
+									type = "function",
+									argsInfo = argsInfo,
+									body = body,
+									closure = env,
+									isMacro = true
+								}
+								env.__macros__[macroName] = macroFn
+								val = macroFn
+
+							elseif formName == "tween" then
+								local obj = CEKMachine.evaluate(elements[2], env)
+								local props = {}
+								local time = 1
+								local easing = "Linear"
+								local i = 3
+								while i <= #elements do
+									local key = elements[i]
+									if key.type == "symbol" then
+										local keyName = key.name
+										if keyName == ":time" then
+											time = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										elseif keyName == ":easing" then
+											easing = elements[i + 1].value
+											i = i + 2
+										elseif keyName:sub(1, 1) == ":" then
+											local propName = keyName:sub(2)
+											propName = propName:sub(1, 1):upper() .. propName:sub(2)
+											local propVal = CEKMachine.evaluate(elements[i + 1], env)
+											props[propName] = propVal
+											i = i + 2
+										else
+											i = i + 1
+										end
+									elseif type(key) == "string" and key:sub(1, 1) == ":" then
+										local keyName = key:sub(2)
+										if keyName == "time" then
+											time = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										elseif keyName == "easing" then
+											easing = elements[i + 1].value
+											i = i + 2
+										else
+											local propName = keyName:sub(1, 1):upper() .. keyName:sub(2)
+											local propVal = CEKMachine.evaluate(elements[i + 1], env)
+											props[propName] = propVal
+											i = i + 2
+										end
+									else
+										i = i + 1
+									end
+								end
+								local tweenService = game:GetService("TweenService")
+								local tweenInfo = TweenInfo.new(time, Enum.EasingStyle[easing])
+								local goals = {}
+								for k, v in pairs(props) do goals[k] = v end
+								local tween = tweenService:Create(obj, tweenInfo, goals)
+								tween:Play()
+								val = tween
+
+							elseif formName == "once" then
+								local obj = CEKMachine.evaluate(elements[2], env)
+								local eventName = elements[3].value
+								local handler = CEKMachine.evaluate(elements[4], env)
+								local connection
+								if type(handler) == "table" and handler.type == "function" then
+									local lispFn = handler
+									handler = function(...)
+										connection:Disconnect()
+										local args = { ... }
+										local localEnv = {}
+										setmetatable(localEnv, { __index = lispFn.closure })
+										bindLambdaArgs(lispFn.argsInfo, args, localEnv)
+										for _, expr in ipairs(lispFn.body) do
+											CEKMachine.evaluate(expr, localEnv)
+										end
+									end
+								else
+									handler = function(...)
+										connection:Disconnect()
+										handler(...)
+									end
+								end
+								connection = obj[eventName]:Connect(handler)
+								val = connection
+
+							elseif formName == "on-touched" then
+								local obj = CEKMachine.evaluate(elements[2], env)
+								local handler = CEKMachine.evaluate(elements[3], env)
+								if type(handler) == "table" and handler.type == "function" then
+									local lispFn = handler
+									local wrapped = function(...)
+										local args = { ... }
+										local localEnv = {}
+										setmetatable(localEnv, { __index = lispFn.closure })
+										bindLambdaArgs(lispFn.argsInfo, args, localEnv)
+										for _, expr in ipairs(lispFn.body) do
+											CEKMachine.evaluate(expr, localEnv)
+										end
+									end
+									val = obj.Touched:Connect(wrapped)
+								else
+									val = obj.Touched:Connect(handler)
+								end
+
+							elseif formName == "instance" then
+								local className = elements[2].value
+								local obj = Instance.new(className)
+								local i = 3
+								while i <= #elements do
+									local elem = elements[i]
+									if elem.type == "symbol" and elem.name:sub(1, 1) == ":" then
+										local propName = elem.name:sub(2)
+										if i + 1 <= #elements then
+											local propVal = CEKMachine.evaluate(elements[i + 1], env)
+											if propName == "BrickColor" and type(propVal) == "string" then
+												propVal = BrickColor.new(propVal)
+											end
+											obj[propName] = propVal
+											i = i + 2
+										else
+											i = i + 1
+										end
+									elseif elem.type == "list" then
+										local child = CEKMachine.evaluate(elem, env)
+										if child and type(child) == "userdata" then
+											child.Parent = obj
+										end
+										i = i + 1
+									else
+										i = i + 1
+									end
+								end
+								val = obj
+
+							elseif formName == "service" then
+								local serviceName = elements[2].value
+								val = game:GetService(serviceName)
+
+							elseif formName == "connect" then
+								local obj = CEKMachine.evaluate(elements[2], env)
+								local eventName = elements[3].value
+								local handler = CEKMachine.evaluate(elements[4], env)
+								if type(handler) == "table" and handler.type == "function" then
+									local lispFn = handler
+									handler = function(...)
+										local args = { ... }
+										local localEnv = {}
+										setmetatable(localEnv, { __index = lispFn.closure })
+										bindLambdaArgs(lispFn.argsInfo, args, localEnv)
+										for _, expr in ipairs(lispFn.body) do
+											CEKMachine.evaluate(expr, localEnv)
+										end
+									end
+								end
+								val = obj[eventName]:Connect(handler)
+
+							elseif formName == "raycast" then
+								local origin = CEKMachine.evaluate(elements[2], env)
+								local direction = CEKMachine.evaluate(elements[3], env)
+								local params = nil
+								if #elements >= 5 then
+									params = CEKMachine.evaluate(elements[4], env)
+								end
+								local raycastParams = params or RaycastParams.new()
+								val = workspace:Raycast(origin, direction, raycastParams)
+
+							elseif formName == "play-sound" then
+								local soundId = elements[2].value
+								local props = {}
+								local i = 3
+								while i <= #elements do
+									local key = elements[i]
+									if key.type == "symbol" and key.name:sub(1, 1) == ":" then
+										local propName = key.name:sub(2)
+										if i + 1 <= #elements then
+											props[propName] = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										end
+									elseif type(key) == "string" and key:sub(1, 1) == ":" then
+										local propName = key:sub(2)
+										if i + 1 <= #elements then
+											props[propName] = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										end
+									else
+										i = i + 1
+									end
+								end
+								local sound = Instance.new("Sound")
+								sound.SoundId = soundId
+								sound.Volume = props.Volume or 0.5
+								sound.Looped = props.Looped or false
+								sound.Parent = props.Parent or workspace
+								sound:Play()
+								val = sound
+
+							elseif formName == "body-velocity" then
+								local parent = CEKMachine.evaluate(elements[2], env)
+								local props = {}
+								local i = 3
+								while i <= #elements do
+									local key = elements[i]
+									if key.type == "symbol" and key.name:sub(1, 1) == ":" then
+										local propName = key.name:sub(2)
+										if i + 1 <= #elements then
+											props[propName] = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										end
+									elseif type(key) == "string" and key:sub(1, 1) == ":" then
+										local propName = key:sub(2)
+										if i + 1 <= #elements then
+											props[propName] = CEKMachine.evaluate(elements[i + 1], env)
+											i = i + 2
+										end
+									else
+										i = i + 1
+									end
+								end
+								local bv = Instance.new("BodyVelocity")
+								bv.Velocity = props.Velocity or Vector3.new(0, 0, 0)
+								bv.MaxForce = props.MaxForce or Vector3.new(4000, 4000, 4000)
+								bv.Parent = parent
+								val = bv
 
 							else
 								local pendingArgs = {}
@@ -404,7 +1034,40 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 					control = nextExpr
 				end
 
+			elseif frame.type == "for-loop" then
+				local loopFrame = frame
+				loopFrame.initDone = true
+				table.insert(kStack, { type = "for-check", env = loopFrame.env, cond = loopFrame.cond, step = loopFrame.step, body = loopFrame.body })
+				control = loopFrame.cond
+
+			elseif frame.type == "for-check" then
+				local condResult = val
+				if condResult then
+					table.insert(kStack, { type = "for-step", env = frame.env, cond = frame.cond, step = frame.step, body = frame.body })
+					control = frame.body
+				else
+					val = nil
+				end
+
+			elseif frame.type == "for-step" then
+				local stepFrame = frame
+				table.insert(kStack, { type = "for-check", env = stepFrame.env, cond = stepFrame.cond, step = stepFrame.step, body = stepFrame.body })
+				control = stepFrame.step
+
+			elseif frame.type == "while-loop" then
+				if val then
+					table.insert(kStack, { type = "while-body", env = frame.env, cond = frame.cond, body = frame.body })
+					control = frame.body
+				else
+					val = nil
+				end
+
+			elseif frame.type == "while-body" then
+				table.insert(kStack, { type = "while-loop", env = frame.env, cond = frame.cond, body = frame.body })
+				control = frame.cond
+
 			elseif frame.type == "eval-arg" then
+				env = frame.env
 				table.insert(frame.ready, val)
 				if #frame.pending > 0 then
 					local nextNode = table.remove(frame.pending, 1)
@@ -457,8 +1120,7 @@ function CEKMachine.evaluate(ast: any, globalEnv: { [string]: any }): any
 							val = nil
 						end
 					elseif type(func) == "table" and func.type == "syntax-rules" then
-						local oldEval = require(script.Parent.Evaluator)
-						local expanded = oldEval.expandSyntaxRules(func, { { type = "symbol", name = "macro" }, table.unpack(args) }, frame.env)
+						local expanded = expandSyntaxRules(func, { { type = "symbol", name = "macro" }, table.unpack(args) }, frame.env)
 						if expanded then
 							control = expanded
 							env = frame.env
