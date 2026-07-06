@@ -17,7 +17,7 @@ Runtime.env["spawn"] = function(fn: any): ()
 			local localEnv = {}
 			setmetatable(localEnv, {__index = lispFn.closure})
 			for _, expr in lispFn.body do
-				Evaluator.eval(expr, localEnv, false)
+				CEKMachine.evaluate(expr, localEnv)
 			end
 		end)
 	else
@@ -44,26 +44,23 @@ local function toLispString(val: any, depth: number?, visited: any?): string
 	elseif type(val) == "table" then
 		if visited[val] then return "#<circular>" end
 		visited[val] = true
-
 		local rawType = rawget(val, "type")
-		if rawType == "function" then return "#<function>" end
-		if rawType == "syntax-rules" then return "#<syntax-rules>" end
-
-		local car = rawget(val, "car")
-		local cdr = rawget(val, "cdr")
-		if car ~= nil and cdr ~= nil then
-			return "(" .. toLispString(car, depth + 1, visited) .. " . " .. toLispString(cdr, depth + 1, visited) .. ")"
-		end
-
-		local items = {}
-		local len = #val
-		for i = 1, len do
-			local v = rawget(val, i)
-			if v ~= nil and not IGNORED_KEYS[i] then
-				table.insert(items, toLispString(v, depth + 1, visited))
+		if rawType == "function" then return "#<function>"
+		elseif rawType == "syntax-rules" then return "#<syntax-rules>"
+		elseif rawType == "continuation" then return "#<continuation>"
+		elseif rawget(val, "car") ~= nil and rawget(val, "cdr") ~= nil then
+			return "(" .. toLispString(rawget(val, "car"), depth + 1, visited) .. " . " .. toLispString(rawget(val, "cdr"), depth + 1, visited) .. ")"
+		else
+			local items = {}
+			local len = #val
+			for i = 1, len do
+				local v = rawget(val, i)
+				if v ~= nil and not IGNORED_KEYS[i] then
+					table.insert(items, toLispString(v, depth + 1, visited))
+				end
 			end
+			return "(" .. table.concat(items, " ") .. ")"
 		end
-		return "(" .. table.concat(items, " ") .. ")"
 	else
 		return tostring(val)
 	end
@@ -74,7 +71,7 @@ function Runtime.execute(lispCode: string): (string?, string?)
 	if #ast == 0 then return nil end
 
 	local results = {}
-	for _, expr in ast do
+	for _, expr in ipairs(ast) do
 		local success, result = pcall(CEKMachine.evaluate, expr, Runtime.env)
 		if not success then
 			local errMsg = "RUNTIME ERROR: " .. tostring(result)
